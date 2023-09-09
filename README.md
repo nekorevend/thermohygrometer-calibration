@@ -1,2 +1,2 @@
 # thermohygrometer-calibration
-Calibrate temperature and humidity sensors.
+Calibrate temperature and humidity sensors for ESPHome.
