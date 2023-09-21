@@ -27,6 +27,8 @@ class Sensor:
 
     def calibrate_temp_yaml(self):
         output = ['calibrate_linear:', '  method: exact', '  datapoints:']
+        if len(self.temp_calibration_data) < 2:
+            return 'Not enough temperature variation recorded. Please gather more measurements!'
         for point in range(len(self.temp_calibration_data)):
             uncal_temp, ref_temp = self.temp_calibration_data[point]
             output.append('    - {:.3f} -> {:.3f}'.format(round(uncal_temp, PRECISION), round(ref_temp, PRECISION)))
@@ -35,12 +37,23 @@ class Sensor:
     def calibrate_hum_lambda(self):
         # In the future we may support having more than two points of calibration.
         # This lambda is only designed for two points so if there are more than two then we will use the first and last entries.
+        if len(self.hum_calibration_data) < 2:
+            return 'Not enough humidity variation recorded. Please gather more measurements!'
         low_data = self.hum_calibration_data[0]
         high_data = self.hum_calibration_data[-1]
         low_ref_temp_low_hum, low_ref_hum, low_temp_low_uncal_hum = low_data[0]
         high_ref_temp_low_hum, _, high_temp_low_uncal_hum = low_data[1]
         low_ref_temp_high_hum, high_ref_hum, low_temp_high_uncal_hum = high_data[0]
         high_ref_temp_high_hum, _, high_temp_high_uncal_hum = high_data[1]
+
+        if high_ref_temp_low_hum - low_ref_temp_low_hum < 2:
+            return 'The temperature delta at low humidity is only {:.3f}. Please gather more measurements!'\
+                    .format(high_ref_temp_low_hum - low_ref_temp_low_hum)
+
+        if high_ref_temp_high_hum - low_ref_temp_high_hum < 2:
+            return 'The temperature delta at high humidity is only {:.3f}. Please gather more measurements!'\
+                    .format(high_ref_temp_high_hum - low_ref_temp_high_hum)
+
         ref_low_hum = 'return {};'.format(low_ref_hum)
         ref_high_hum = 'return {};'.format(high_ref_hum)
         raw_low_hum = ['{{{:.3f}, {:.3f}}}'.format(round(low_ref_temp_low_hum, PRECISION), round(low_temp_low_uncal_hum, PRECISION)),
@@ -157,10 +170,19 @@ class Calibrator:
     def process_temperatures(self):
         candidate_temps = []
 
-        for temp in sorted(list(self.ref_temp_to_ts.keys())):
-            # Ignore temperatures that don't have many sample points and have at least a 2 degree interval.
-            if len(self.ref_temp_to_ts[temp]) > MINIMUM_SAMPLES and (not candidate_temps or (candidate_temps and temp > candidate_temps[-1][0] + 2)):
-                candidate_temps.append((temp, self.ref_temp_to_ts[temp]))
+        temps = sorted(self.ref_temp_to_ts.keys())
+
+        # Scale the minimum temperature interval between temperature points to guarantee at least three.
+        # Default to a 2 degree interval unless we need to go smaller.
+        temp_interval = min(2, (temps[-1] - temps[0]) / 3)
+        for temp in temps:
+            # Ignore temperatures that don't have many sample points.
+            if len(self.ref_temp_to_ts[temp]) <= MINIMUM_SAMPLES or \
+                    not (not candidate_temps or \
+                         (candidate_temps and temp > candidate_temps[-1][0] + temp_interval)
+                        ):
+                continue
+            candidate_temps.append((temp, self.ref_temp_to_ts[temp]))
 
         sensors = {}
 
@@ -171,8 +193,10 @@ class Calibrator:
             for candidate_temp, candidate_times in candidate_temps:
                 values = []
                 for time in candidate_times:
-                    values.append(uncal_values[time])
-                sensors[sensor].append((mean(values), candidate_temp))
+                    if time in uncal_values:
+                        values.append(uncal_values[time])
+                if values:
+                    sensors[sensor].append((mean(values), candidate_temp))
 
         return sensors
 
@@ -219,6 +243,9 @@ class Calibrator:
         # # print('mean humidity temps', min(mean_hum_temps), max(mean_hum_temps))
         # print('high humidity temps', min(high_hum_temps), max(high_hum_temps))
 
+        if not low_hum_temps or not low_hum_temps or not high_hum_temps or not high_hum_temps:
+            return defaultdict(list)
+
         low_hum_low_temp, low_hum_low_temp_ts = min(low_hum_temps)
         low_hum_high_temp, low_hum_high_temp_ts = max(low_hum_temps)
         # mean_hum_low_temp, mean_hum_low_temp_ts = min(mean_hum_temps)
@@ -230,11 +257,12 @@ class Calibrator:
         for sensor in self.interval_ts_uncal_hums.keys():
             values = self.interval_ts_uncal_hums[sensor]
 
-            sensors[sensor] = [((low_hum_low_temp, hum_low, values[low_hum_low_temp_ts]),
-                                    (low_hum_high_temp, hum_low, values[low_hum_high_temp_ts])),
-                                    ((high_hum_low_temp, hum_high, values[high_hum_low_temp_ts]),
-                                    (high_hum_high_temp, hum_high, values[high_hum_high_temp_ts]))
-                                    ]
+            sensors[sensor] = [
+                ((low_hum_low_temp, hum_low, values[low_hum_low_temp_ts]),
+                 (low_hum_high_temp, hum_low, values[low_hum_high_temp_ts])),
+                ((high_hum_low_temp, hum_high, values[high_hum_low_temp_ts]),
+                 (high_hum_high_temp, hum_high, values[high_hum_high_temp_ts]))
+                              ]
 
         return sensors
 
@@ -243,8 +271,8 @@ class Calibrator:
         sensor_temp = self.process_temperatures()
         sensors = {}
 
-        temp_names = sorted(list(self.interval_ts_uncal_temps.keys()))
-        hum_names = sorted(list(self.interval_ts_uncal_hums.keys()))
+        temp_names = sorted(self.interval_ts_uncal_temps.keys())
+        hum_names = sorted(self.interval_ts_uncal_hums.keys())
 
         for i in range(len(temp_names)):
             sensor_name_temp = temp_names[i]
