@@ -1,6 +1,7 @@
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import timedelta
+from math import floor, pow
 from statistics import pstdev, mean
 
 PRECISION = 3
@@ -31,7 +32,11 @@ class Sensor:
             return 'Not enough temperature variation recorded. Please gather more measurements!'
         for point in range(len(self.temp_calibration_data)):
             uncal_temp, ref_temp = self.temp_calibration_data[point]
-            output.append('    - {:.3f} -> {:.3f}'.format(round(uncal_temp, PRECISION), round(ref_temp, PRECISION)))
+            output.append('    - {:.3f} -> {:.3f}  # Delta {:.3f}'
+                .format(
+                    round(uncal_temp, PRECISION),
+                    round(ref_temp, PRECISION),
+                    round(ref_temp, PRECISION) - round(uncal_temp, PRECISION)))
         return '\n'.join(output).strip()
 
     def calibrate_hum_lambda(self):
@@ -46,13 +51,13 @@ class Sensor:
         low_ref_temp_high_hum, high_ref_hum, low_temp_high_uncal_hum = high_data[0]
         high_ref_temp_high_hum, _, high_temp_high_uncal_hum = high_data[1]
 
-        if high_ref_temp_low_hum - low_ref_temp_low_hum < 2:
-            return 'The temperature delta at low humidity is only {:.3f}. Please gather more measurements!'\
-                    .format(high_ref_temp_low_hum - low_ref_temp_low_hum)
+        if high_ref_temp_low_hum - low_ref_temp_low_hum < 1:
+            return 'The temperature delta at low humidity ({}%) is only {:.3f}°. Please gather more measurements!'\
+                    .format(low_ref_hum, high_ref_temp_low_hum - low_ref_temp_low_hum)
 
-        if high_ref_temp_high_hum - low_ref_temp_high_hum < 2:
-            return 'The temperature delta at high humidity is only {:.3f}. Please gather more measurements!'\
-                    .format(high_ref_temp_high_hum - low_ref_temp_high_hum)
+        if high_ref_temp_high_hum - low_ref_temp_high_hum < 1:
+            return 'The temperature delta at high humidity ({}%) is only {:.3f}°. Please gather more measurements!'\
+                    .format(high_ref_hum, high_ref_temp_high_hum - low_ref_temp_high_hum)
 
         ref_low_hum = 'return {};'.format(low_ref_hum)
         ref_high_hum = 'return {};'.format(high_ref_hum)
@@ -175,14 +180,14 @@ class Calibrator:
         # Scale the minimum temperature interval between temperature points to guarantee at least three.
         # Default to a 2 degree interval unless we need to go smaller.
         temp_interval = min(2, (temps[-1] - temps[0]) / 3)
+        # Round to the defined precision.
+        round_factor = pow(10, RELAXED_PRECISION)
+        temp_interval = floor(temp_interval * round_factor) / round_factor
         for temp in temps:
             # Ignore temperatures that don't have many sample points.
-            if len(self.ref_temp_to_ts[temp]) <= MINIMUM_SAMPLES or \
-                    not (not candidate_temps or \
-                         (candidate_temps and temp > candidate_temps[-1][0] + temp_interval)
-                        ):
-                continue
-            candidate_temps.append((temp, self.ref_temp_to_ts[temp]))
+            if len(self.ref_temp_to_ts[temp]) > MINIMUM_SAMPLES and \
+                    (not candidate_temps or temp >= candidate_temps[-1][0] + temp_interval):
+                candidate_temps.append((temp, self.ref_temp_to_ts[temp]))
 
         sensors = {}
 
